@@ -105,7 +105,8 @@
 //! On my feeble 2 core laptop this ends up being bound by the alignment at ~300MB/s,
 //! but it should scale well to a larger number of cores.
 
-use std::io::{Error, ErrorKind, Read, Result};
+use std::collections::VecDeque;
+use std::io::{Error, ErrorKind, Read, Result, Cursor};
 use std::iter::FromIterator;
 use std::path::Path;
 use std::sync::mpsc::{sync_channel, SyncSender};
@@ -303,6 +304,8 @@ impl<R: Read> RecordRefIter<R> {
     }
 }
 
+
+
 /// A collection of fastq records used to iterate over records in chunks.
 #[derive(Debug)]
 pub struct RecordSet {
@@ -351,8 +354,7 @@ impl<'a> Iterator for RecordSetItems<'a> {
         }
     }
 }
-
-struct RecordSetIter<R: Read> {
+pub struct RecordSetIter<R: Read> {
     parser: Parser<R>,
     num_records_guess: usize,
     reader_at_end: bool,
@@ -419,6 +421,132 @@ impl<R: Read> Iterator for RecordSetIter<R> {
                     let (start, end) = (record.data.0, record.data.1);
                     records.push(record);
                     self.parser.buffer.consume(end - start);
+                }
+            }
+        }
+    }
+}
+
+pub struct MultiRecordSetIter<R: Read>{
+    parsers: Vec<Parser<R>>,
+    num_records_guess: usize,
+    one_reader_at_end: bool,
+    num_parsers: usize,
+    found_error: bool,
+    should_return: bool,
+    error_kind: ErrorKind,
+    error_string: String
+}
+pub fn new_multi<R: Read>(parsers: Vec<Parser<R>>) -> MultiRecordSetIter<R>{
+    let n = parsers.len();
+    MultiRecordSetIter{
+            parsers: parsers,
+            num_records_guess: 100,
+            one_reader_at_end: false,
+            num_parsers: n,
+            found_error: false,
+            should_return: false,
+            error_kind: ErrorKind::Other,
+            error_string: "".to_string()
+    }
+}
+impl<R: Read> Iterator for MultiRecordSetIter<R>{
+    type Item = Vec<Result<RecordSet>>;
+
+    fn next(&mut self) -> Option<Vec<Result<RecordSet>>>{
+        if self.one_reader_at_end{
+            return None
+        }
+        println!("{}", self.parsers[0].buffer.data().len());
+        let mut multi_records: VecDeque<Vec<IdxRecord>> = VecDeque::with_capacity(self.num_parsers);
+        for _i in 0..self.num_parsers{
+            multi_records.push_back(Vec::with_capacity(self.num_records_guess))
+        }
+
+        loop {
+            if self.found_error {
+                let mut multi_recordset: Vec<Result<RecordSet>> = Vec::with_capacity(self.num_parsers);
+                for _n in 0..self.num_parsers {
+                    multi_recordset.push(Err(Error::new(self.error_kind, self.error_string.as_str())));
+                }
+                return Some(multi_recordset)
+            }
+            // if we hit the max on any parser we need to reset all buffers and return the set.
+            if self.should_return {
+                self.should_return = false;
+                let mut multi_recordset: Vec<Result<RecordSet>> = Vec::with_capacity(self.num_parsers);
+                println!("Returning a set");
+                self.num_records_guess = multi_records[0].len() + 1;
+                for parser in &mut self.parsers{
+                    let buffer = vec![0u8; BUFSIZE].into_boxed_slice();
+                    let buffer = parser.buffer.replace_buffer(buffer);
+                    // Check if any parsers are at the end
+                    match parser.buffer.read_into(&mut parser.reader) {
+                        Err(e) => multi_recordset.push(Err(e)),
+                        Ok(0) => self.one_reader_at_end = true,
+                        _ => {}
+                    }
+                    let records =  multi_records.pop_front().unwrap();
+                    multi_recordset.push(Ok(RecordSet::from_records(buffer, records)));
+                }
+                return Some(multi_recordset)
+            } else {
+                let mut i: usize = 0;
+                
+                for parser in &mut self.parsers {
+                    let buffer_pos = parser.buffer.pos();
+                    // Potentially risky to just unwrap here.
+                    let parse_result = IdxRecord::from_buffer(parser.buffer.data()).unwrap();
+                    use IdxRecordResult::*;
+                    match parse_result {
+                        EmptyBuffer => {
+                            println!("EmptyBuffer");
+                            match parser.buffer.read_into(&mut parser.reader) {
+                                Err(e) =>  panic!("Can't read into buffer, err {}", e),
+                                Ok(0) => {self.one_reader_at_end = true;
+                                    self.should_return = true;
+                                },
+                                _ => {}
+                            }
+                            
+                        }
+                        Incomplete => {
+                            println!("Incomplete");
+                            if parser.buffer.n_free() == 0 {
+                                self.found_error = true;
+                                self.error_kind = ErrorKind::InvalidData;
+                                self.error_string = "Fastq record is too long.".to_string();
+                            }
+                            match parser.buffer.read_into(&mut parser.reader) {
+                                Err(e) => {
+                                    panic!("Can't read into buffer, err {}", e);
+                                },
+                                Ok(0) => {
+                                    self.found_error = true;
+                                    self.error_kind = ErrorKind::InvalidData;
+                                    self.error_string = "Truncated input file.".to_string();
+                                }
+                                _ => {}
+                            }
+                            self.should_return = true;
+                        }
+                        Record(mut record) => {
+                            println!("Found a record!");
+                            record.data.0 += buffer_pos;
+                            record.data.1 += buffer_pos;
+                            let (start, end) = (record.data.0, record.data.1);
+                            multi_records[i].push(record);
+                            parser.buffer.consume(end - start);
+                        }
+                    }
+                    i += 1;
+                }
+            }
+            // Check if any buffers are filled, this check should mean we never encounter EmptyBuffer except for the first time
+            for parser in self.parsers.iter(){
+                if parser.buffer.data().len() == 0{
+                    println!("Buffer empty precheck");
+                    self.should_return = true;
                 }
             }
         }
@@ -650,7 +778,23 @@ mod tests {
         });
         ok.unwrap();
     }
+    
+    fn multi_records(){
+        
+        let data1 = Cursor::new(b"@hi1\nNN\n+\n++\n@hallo1\nTCC\n+\nabc\n");
+        let data2 = Cursor::new(b"@hi2\nNN\n+\n++\n@hallo2\nTCC\n+\nabdc\n");
+        let parser1 = Parser::new(data1);
+        let parser2 = Parser::new(data2);
+        let parser_vec = vec![parser1, parser2];
+        let mut i = 0;
+        for record_sets_vec in Self::multirecord_set(parser_vec) {
+            for record_sets in record_sets_vec{
+                for record_set in record_sets{
 
+                }
+            }
+        }
+    }
     #[test]
     fn empty_id() {
         let data = Cursor::new(b"@\nNN\n+\n++\n");
