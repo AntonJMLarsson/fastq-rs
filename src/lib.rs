@@ -106,7 +106,7 @@
 //! but it should scale well to a larger number of cores.
 
 use std::collections::VecDeque;
-use std::io::{Error, ErrorKind, Read, Result, Cursor};
+use std::io::{Error, ErrorKind, Read, Result};
 use std::iter::FromIterator;
 use std::path::Path;
 use std::sync::mpsc::{sync_channel, SyncSender};
@@ -398,6 +398,7 @@ impl<R: Read> Iterator for RecordSetIter<R> {
                     let buffer = vec![0u8; BUFSIZE].into_boxed_slice();
                     let buffer = self.parser.buffer.replace_buffer(buffer);
                     if self.parser.buffer.n_free() == 0 {
+                        println!("Fastq record too long.");
                         return Some(Err(Error::new(
                             ErrorKind::InvalidData,
                             "Fastq record is too long.",
@@ -406,6 +407,7 @@ impl<R: Read> Iterator for RecordSetIter<R> {
                     match self.parser.buffer.read_into(&mut self.parser.reader) {
                         Err(e) => return Some(Err(e)),
                         Ok(0) => {
+                            println!("Fastq record too long.");
                             return Some(Err(Error::new(
                                 ErrorKind::InvalidData,
                                 "Truncated input file.",
@@ -779,22 +781,6 @@ mod tests {
         ok.unwrap();
     }
     
-    fn multi_records(){
-        
-        let data1 = Cursor::new(b"@hi1\nNN\n+\n++\n@hallo1\nTCC\n+\nabc\n");
-        let data2 = Cursor::new(b"@hi2\nNN\n+\n++\n@hallo2\nTCC\n+\nabdc\n");
-        let parser1 = Parser::new(data1);
-        let parser2 = Parser::new(data2);
-        let parser_vec = vec![parser1, parser2];
-        let mut i = 0;
-        for record_sets_vec in Self::multirecord_set(parser_vec) {
-            for record_sets in record_sets_vec{
-                for record_set in record_sets{
-
-                }
-            }
-        }
-    }
     #[test]
     fn empty_id() {
         let data = Cursor::new(b"@\nNN\n+\n++\n");
