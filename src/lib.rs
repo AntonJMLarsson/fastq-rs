@@ -398,7 +398,6 @@ impl<R: Read> Iterator for RecordSetIter<R> {
                     let buffer = vec![0u8; BUFSIZE].into_boxed_slice();
                     let buffer = self.parser.buffer.replace_buffer(buffer);
                     if self.parser.buffer.n_free() == 0 {
-                        println!("Fastq record too long.");
                         return Some(Err(Error::new(
                             ErrorKind::InvalidData,
                             "Fastq record is too long.",
@@ -407,7 +406,6 @@ impl<R: Read> Iterator for RecordSetIter<R> {
                     match self.parser.buffer.read_into(&mut self.parser.reader) {
                         Err(e) => return Some(Err(e)),
                         Ok(0) => {
-                            println!("Fastq record too long.");
                             return Some(Err(Error::new(
                                 ErrorKind::InvalidData,
                                 "Truncated input file.",
@@ -459,7 +457,6 @@ impl<R: Read> Iterator for MultiRecordSetIter<R>{
         if self.one_reader_at_end{
             return None
         }
-        println!("{}", self.parsers[0].buffer.data().len());
         let mut multi_records: VecDeque<Vec<IdxRecord>> = VecDeque::with_capacity(self.num_parsers);
         for _i in 0..self.num_parsers{
             multi_records.push_back(Vec::with_capacity(self.num_records_guess))
@@ -477,82 +474,81 @@ impl<R: Read> Iterator for MultiRecordSetIter<R>{
             if self.should_return {
                 self.should_return = false;
                 let mut multi_recordset: Vec<Result<RecordSet>> = Vec::with_capacity(self.num_parsers);
-                println!("Returning a set");
                 self.num_records_guess = multi_records[0].len() + 1;
                 for parser in &mut self.parsers{
                     let buffer = vec![0u8; BUFSIZE].into_boxed_slice();
                     let buffer = parser.buffer.replace_buffer(buffer);
+                    if parser.buffer.n_free() == 0 {
+                        println!("Fastq record is too long");
+                        self.found_error = true;
+                        self.error_kind = ErrorKind::InvalidData;
+                        self.error_string = "Fastq record is too long.".to_string();
+                    }
                     // Check if any parsers are at the end
                     match parser.buffer.read_into(&mut parser.reader) {
                         Err(e) => multi_recordset.push(Err(e)),
                         Ok(0) => self.one_reader_at_end = true,
                         _ => {}
                     }
+                    
                     let records =  multi_records.pop_front().unwrap();
                     multi_recordset.push(Ok(RecordSet::from_records(buffer, records)));
                 }
                 return Some(multi_recordset)
             } else {
-                let mut i: usize = 0;
                 
+                let mut parse_results : Vec<IdxRecordResult> = Vec::new();
                 for parser in &mut self.parsers {
-                    let buffer_pos = parser.buffer.pos();
                     // Potentially risky to just unwrap here.
                     let parse_result = IdxRecord::from_buffer(parser.buffer.data()).unwrap();
+                    parse_results.push(parse_result);
+                }
+                let mut records : Vec<IdxRecord> = Vec::new();
+                for (parse_result, parser) in parse_results.into_iter().zip(&mut self.parsers){
+                    let mut i = 0;
                     use IdxRecordResult::*;
                     match parse_result {
                         EmptyBuffer => {
-                            println!("EmptyBuffer");
                             match parser.buffer.read_into(&mut parser.reader) {
-                                Err(e) =>  panic!("Can't read into buffer, err {}", e),
-                                Ok(0) => {self.one_reader_at_end = true;
-                                    self.should_return = true;
-                                },
+                                Err(e) => panic!("Can't read into buffer err {}", e),
+                                Ok(0) => self.one_reader_at_end = true,
                                 _ => {}
                             }
-                            
                         }
                         Incomplete => {
-                            println!("Incomplete");
-                            if parser.buffer.n_free() == 0 {
-                                self.found_error = true;
-                                self.error_kind = ErrorKind::InvalidData;
-                                self.error_string = "Fastq record is too long.".to_string();
-                            }
-                            match parser.buffer.read_into(&mut parser.reader) {
-                                Err(e) => {
-                                    panic!("Can't read into buffer, err {}", e);
-                                },
-                                Ok(0) => {
-                                    self.found_error = true;
-                                    self.error_kind = ErrorKind::InvalidData;
-                                    self.error_string = "Truncated input file.".to_string();
-                                }
-                                _ => {}
-                            }
                             self.should_return = true;
                         }
-                        Record(mut record) => {
-                            println!("Found a record!");
-                            record.data.0 += buffer_pos;
-                            record.data.1 += buffer_pos;
-                            let (start, end) = (record.data.0, record.data.1);
-                            multi_records[i].push(record);
-                            parser.buffer.consume(end - start);
+                        Record(record) => {
+                            records.push(record);
                         }
                     }
                     i += 1;
                 }
+                if self.should_return {
+                    continue;
+                }
+                else {
+                    let mut i: usize = 0;
+                    for mut record in records {
+                        let buffer_pos = self.parsers[i].buffer.pos();
+                        record.data.0 += buffer_pos;
+                        record.data.1 += buffer_pos;
+                        let (start, end) = (record.data.0, record.data.1);
+                        multi_records[i].push(record);
+                        self.parsers[i].buffer.consume(end - start);
+                        i += 1;
+                    }
+                }
             }
-            // Check if any buffers are filled, this check should mean we never encounter EmptyBuffer except for the first time
             for parser in self.parsers.iter(){
                 if parser.buffer.data().len() == 0{
-                    println!("Buffer empty precheck");
                     self.should_return = true;
                 }
             }
         }
     }
+            // Check if any buffers are filled, this check should mean we never encounter EmptyBuffer except for the first time
+                
 }
 
 impl<R: Read> Parser<R> {
