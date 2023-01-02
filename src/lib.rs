@@ -505,7 +505,6 @@ impl<R: Read> Iterator for MultiRecordSetIter<R>{
                 }
                 let mut records : Vec<IdxRecord> = Vec::new();
                 for (parse_result, parser) in parse_results.into_iter().zip(&mut self.parsers){
-                    let mut i = 0;
                     use IdxRecordResult::*;
                     match parse_result {
                         EmptyBuffer => {
@@ -522,20 +521,19 @@ impl<R: Read> Iterator for MultiRecordSetIter<R>{
                             records.push(record);
                         }
                     }
-                    i += 1;
                 }
                 if self.should_return {
                     continue;
                 }
                 else {
                     let mut i: usize = 0;
-                    for mut record in records {
-                        let buffer_pos = self.parsers[i].buffer.pos();
+                    for (mut record, parser) in records.into_iter().zip(&mut self.parsers) {
+                        let buffer_pos = parser.buffer.pos();
                         record.data.0 += buffer_pos;
                         record.data.1 += buffer_pos;
                         let (start, end) = (record.data.0, record.data.1);
                         multi_records[i].push(record);
-                        self.parsers[i].buffer.consume(end - start);
+                        parser.buffer.consume(end - start);
                         i += 1;
                     }
                 }
