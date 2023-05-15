@@ -127,7 +127,7 @@ pub use thread_reader::thread_reader;
 #[cfg(fuzzing)]
 const BUFSIZE: usize = 64;
 #[cfg(not(fuzzing))]
-const BUFSIZE: usize = 68 * 1024;
+const BUFSIZE: usize = 680 * 1024;
 
 /// Parser for fastq files.
 pub struct Parser<R: Read> {
@@ -475,11 +475,11 @@ impl<R: Read> Iterator for MultiRecordSetIter<R>{
                 self.should_return = false;
                 let mut multi_recordset: Vec<Result<RecordSet>> = Vec::with_capacity(self.num_parsers);
                 self.num_records_guess = multi_records[0].len() + 1;
-                for parser in &mut self.parsers{
+                for parser in &mut self.parsers {
                     let buffer = vec![0u8; BUFSIZE].into_boxed_slice();
                     let buffer = parser.buffer.replace_buffer(buffer);
                     if parser.buffer.n_free() == 0 {
-                        println!("Fastq record is too long");
+                        panic!("Fastq record is too long");
                         self.found_error = true;
                         self.error_kind = ErrorKind::InvalidData;
                         self.error_string = "Fastq record is too long.".to_string();
@@ -504,7 +504,7 @@ impl<R: Read> Iterator for MultiRecordSetIter<R>{
                     parse_results.push(parse_result);
                 }
                 let mut records : Vec<IdxRecord> = Vec::new();
-                for (parse_result, parser) in parse_results.into_iter().zip(&mut self.parsers){
+                for (parse_result, parser) in parse_results.into_iter().zip(&mut self.parsers) {
                     use IdxRecordResult::*;
                     match parse_result {
                         EmptyBuffer => {
@@ -539,7 +539,7 @@ impl<R: Read> Iterator for MultiRecordSetIter<R>{
                 }
             }
             for parser in self.parsers.iter(){
-                if parser.buffer.data().len() == 0{
+                if parser.buffer.data().len() == 0 {
                     self.should_return = true;
                 }
             }
